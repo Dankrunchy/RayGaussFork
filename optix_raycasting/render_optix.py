@@ -114,14 +114,14 @@ class RenderOptixFunction(torch.autograd.Function):
       cp_rgb=compute_cupy_rgb(settings.viewpoint_cam.camera_center,cp_positions,cp_color_features,
                 cp_sph_gauss_features,cp_bandwidth_sharpness,cp_lobe_axis,settings.num_sph_gauss,
                 order_sh)
-      cp_ray_colors= u_ox.launch_pipeline_forward(settings.pipeline_fwd,sbt_fwd, settings.gas,bb_min,bb_max,settings.viewpoint_cam,
+      cp_ray_colors, cp_ray_bbox, cp_ray_normals, cp_ray_density, cp_ray_depth = u_ox.launch_pipeline_forward(settings.pipeline_fwd,sbt_fwd, settings.gas,bb_min,bb_max,settings.viewpoint_cam,
                                             cp_densities,cp_rgb,
                                             cp_positions,cp_scales,cp_quaternions,
                                             max_prim_slice=settings.max_prim_slice,iteration=settings.iteration,
                                             jitter=settings.jitter, rnd_sample=settings.rnd_sample, supersampling=settings.supersampling,
                                             white_background=settings.white_background, hit_prim_idx=settings.hit_prim_idx)
 
-      [ray_colors,rgb]=utilities.cupy2torch(cp_ray_colors,cp_rgb)
+      [ray_colors,rgb, ray_bbox, ray_normals, ray_density, ray_depth ]=utilities.cupy2torch(cp_ray_colors,cp_rgb, cp_ray_bbox, cp_ray_normals, cp_ray_density, cp_ray_depth )
 
       ctx.settings=settings
       ctx.save_for_backward(positions,scales,normalized_quaternions,densities,color_features,
@@ -129,11 +129,11 @@ class RenderOptixFunction(torch.autograd.Function):
       ctx.bb_min=bb_min
       ctx.bb_max=bb_max
       ctx.order_sh=order_sh
-      return ray_colors
+      return ray_colors, ray_bbox, ray_normals, ray_density, ray_depth
 
 
     @staticmethod
-    def backward(ctx, dloss_dray_colors):
+    def backward(ctx, dloss_dray_colors, *args):
       if not dloss_dray_colors.is_contiguous():
         dloss_dray_colors=dloss_dray_colors.contiguous()
 
@@ -185,6 +185,10 @@ class RenderOptixFunction(torch.autograd.Function):
         bandwidth_sharpness_grad=None
         lobe_axis_grad=None
         sph_gauss_feat_grad=None
+        
+        # quick and ugly solution to perform experiment
+        if settings.iteration == 0:
+          color_features_grad = None
 
       grads=(positions_grad,scales_grad,normalized_quaternions_grad,densities_grad,color_features_grad,sph_gauss_feat_grad,bandwidth_sharpness_grad,lobe_axis_grad,None)
       return grads      
