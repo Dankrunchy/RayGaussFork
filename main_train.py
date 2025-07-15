@@ -19,16 +19,24 @@ parser.add_argument("--save_dir", type=str, default=None, help="Path to save dir
 args = parser.parse_args()
 
 ############################################################################################################
+config=OmegaConf.load(args.config)
+
+
 now = datetime.now()
 timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
 if args.save_dir is not None:
   timestamp=args.save_dir
-timestamped_dir=os.path.join('output',timestamp)
+
+# scene_name = config.scene.source_path.split(os.sep)[-1]
+scene_name = ''
+
+timestamped_dir=os.path.join('output', scene_name, timestamp)
 os.makedirs(timestamped_dir,exist_ok=True)
 #In this folder, save model, config file
 os.makedirs(os.path.join(timestamped_dir,"config"),exist_ok=True)
 
-config=OmegaConf.load(args.config)
+from torch.utils.tensorboard import SummaryWriter
+tb_writer = SummaryWriter( timestamped_dir )
 
 config.save.models=os.path.join(timestamped_dir, config.save.models)
 config.save.screenshots=os.path.join(timestamped_dir, config.save.screenshots)
@@ -74,7 +82,7 @@ if args.arg_names is not None and args.arg_values is not None:
 OmegaConf.save(config,os.path.join(timestamped_dir,"config","config.yml"))
 
 if __name__ == "__main__":
-  psnr_test,opt_scene=train(config,quiet=True)
+  psnr_test,opt_scene=train(config,quiet=True, tb_writer=tb_writer)
   print("PSNR : ",psnr_test)
   #Save model at the end of the training
   opt_scene.pointcloud.save_model(config.training.n_iters ,config.save.models)

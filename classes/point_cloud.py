@@ -13,6 +13,9 @@ from utils.general_utils import inverse_sigmoid,build_rotation
 
 import math
 
+from pathlib import Path
+from numpy.typing import NDArray
+
 
 class PointCloud:
   """Point Cloud class.
@@ -1213,11 +1216,13 @@ class PointCloud:
                                 new_sph_gauss_features, new_bandwidth_sharpness, new_lobe_axis, new_filter_3D, quiet)
 
   @torch.no_grad()
-  def densify_and_prune(self, max_grad, min_density, extent, quiet=True):
+  def densify_and_prune(self, max_grad, min_density, extent, quiet=True, iteration: int = None, tb_writer = None):
     grads = self.xyz_gradient_accum_norm / self.num_accum
     grads[grads.isnan()] = 0.0
     if not quiet:
       print("mean grads : ", torch.mean(grads))
+
+    self.debug_histograms(None, iteration, grads, min_grad=max_grad, tb_writer=tb_writer)
 
     self.densify_and_clone(grads, max_grad, extent, quiet=quiet)
     self.densify_and_split(grads, max_grad, extent, quiet=quiet)
@@ -1301,3 +1306,107 @@ class PointCloud:
     #   self.scales = torch.log(exp_scales)
     #   self.scales.contiguous().requires_grad_(True)
     return
+
+
+  @torch.no_grad
+  def debug_histograms(self, _path: Path|str|None, iteration: int, grads = None, bin_count: int = 1000, 
+                        min_grad: float = None, tb_writer = None):
+      """For Debugging and Introspection
+
+      Args:
+          _path (Path | str | None): Path to folder of where to store graphs. If None then written only to Tensorboard if available
+          iteration (int): Which iteration during traniing
+          grads (_type_, optional): Accumulated gradient. If None then calculated on the fly. Defaults to None.
+          bin_count (int, optional): Amount of bins for histograms. Defaults to 1000.
+          min_grad (float, optional): The densification threshold. If None not drawn in graphic. Defaults to None.
+          tb_writer (SummaryWriter, optional): Tensorboard Writer. Defaults to None.
+      """
+      def add_to_tb_writer(title: str, values: NDArray):
+          if tb_writer:
+              values = values.astype(float).reshape(-1)
+              sum_sq = values.dot(values)
+              
+              tb_writer.add_histogram_raw(
+                  tag=title,
+                  min=values.min(),
+                  max=values.max(),
+                  num=len(values),
+                  sum=values.sum(),
+                  sum_squares=sum_sq,
+                  bucket_limits=bins[1:].tolist(),
+                  bucket_counts=counts.tolist(),
+                  global_step=iteration)
+      
+      if grads is None:
+          grads = self.xyz_gradient_accum[:self._g_count] / self.denom[:self._g_count]
+          # if division by zero in self.denom
+          grads = torch.nan_to_num(grads, 1e-12, 1e-12, 1e-12, out=grads)
+      
+      _grads_np = grads.cpu().numpy()
+      counts, bins = np.histogram(_grads_np, bins=bin_count)
+      
+      # skip lowest grad count (with most gaussians)
+      # f = plt.figure(figsize=(12, 8))
+      # plt.hist(bins[:-1], bins, weights=counts, log=True)
+      # plt.title(f'Grad Distribution iteration {iteration}')
+      # plt.xlabel("Accumulated Grad")
+      # plt.ylabel("Amount of Gaussians")
+      # path = Path(_path, "graphs", f"grads_{iteration}.png")
+      if _path is not None:
+          path = Path(_path, "graphs", "gradients", f"grads_{iteration}.npy")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          # plt.savefig( str(path) )
+          np.save(path, np.asarray( [counts, bins, grads.shape[0]], dtype=object ))
+      
+      add_to_tb_writer('Accumulated Gradients Distribution', _grads_np)
+      
+      # scale distribution
+      _scales_np = self.get_scale().cpu().numpy()
+      counts, bins = np.histogram(_scales_np, bins=bin_count)
+      
+      if _path is not None:
+          path = Path(_path, "graphs", "scales", f"scales_{iteration}.npy")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          # plt.savefig( str(path) )
+          np.save(path, np.asarray( [counts, bins, grads.shape[0]], dtype=object ))
+      
+      add_to_tb_writer('Scale Distribution', _scales_np)
+      
+      # density distribution
+      _density_np = self.get_density().cpu().numpy()
+      counts, bins = np.histogram(_density_np, bins=bin_count)
+      
+      if _path is not None:
+          path = Path(_path, "graphs", "densities", f"densities_{iteration}.npy")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          # plt.savefig( str(path) )
+          np.save(path, np.asarray( [counts, bins, grads.shape[0]], dtype=object ))
+      
+      add_to_tb_writer('Density Distribution', _density_np)
+      
+      # Plot scale/grad correlation
+      import matplotlib.pyplot as plt
+      f = plt.figure(figsize=(12, 8))
+      plt.scatter( grads.detach().cpu().numpy(), torch.prod(self.get_scale(), dim=-1).detach().cpu().numpy(),
+                    s=2.5 )
+      plt.grid(True, which="both", linestyle="--", linewidth=0.5)  # Background grid
+      plt.xscale("log") # gradients can get very big, so use log scale
+      plt.yscale("log")
+      
+      if min_grad:
+          plt.axvline(x=min_grad, color='red', linestyle='--', linewidth=1.0, label="Densification Threshold")
+          plt.legend()
+      
+      title_pre = f"{Path(_path).name}: " if _path is not None else ""
+      plt.title(f'{title_pre}Accumulated Gradient - Scale Correlation, iteration {iteration}')
+      plt.xlabel("Accumulated Grad")
+      plt.ylabel('"Volume" (product of all axes)')
+      
+      if _path is not None:
+          path = Path(_path, "graphs", "correlations")
+          path.mkdir(exist_ok=True, parents=True)
+          plt.savefig( str(path / f"corr_{iteration}.png") )
+      plt.close()
+      
+      if tb_writer:
+          tb_writer.add_figure("Accumulated Gradient - Scale Correlation", f, global_step=iteration)

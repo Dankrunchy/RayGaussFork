@@ -44,7 +44,7 @@ def visualize_depth(depth: torch.Tensor, near: float=0.2, far: float=None) -> to
     out_depth = np.clip(np.nan_to_num(vis), 0., 1.)
     return torch.from_numpy(out_depth).float().cuda().permute(2,0,1)
 
-def train(config, quiet=True):
+def train(config, quiet=True, tb_writer=None):
   mempool = cp.get_default_memory_pool()
 
   learnable_point_cloud=point_cloud.PointCloud(data_type=config.pointcloud.data_type,device=device)
@@ -141,17 +141,18 @@ def train(config, quiet=True):
 
     torch.cuda.synchronize()
     
+    tb_writer.add_scalar("L1 Loss", Ll1, iter)
+    tb_writer.add_scalar("Number Points", positions.shape[0], iter)
+
     # ----------------------------------------------------------------------------------------------
     # VISUALIZE TRAINING PROGRESS
     # ----------------------------------------------------------------------------------------------
     # opt_scene.getTrainCameras(config.scene.train_resolution_scales).copy()
     # for now use selected random camera
-    if iter % 10 == 0:
+    if iter % 100 == 0:
       
       bbox_mean=utilities.reduce_supersampling(viewpoint_cam.image_width,viewpoint_cam.image_height,ray_bbox,supersampling)
       bbox_mean=bbox_mean.permute(2,0,1)
-      
-
       
       visualization_list = [
         # make_grid requires shape BxCxHxW
@@ -171,7 +172,8 @@ def train(config, quiet=True):
       scale = grid.shape[-2] / 800
       grid = torch.nn.functional.interpolate(grid[None], (int(grid.shape[-2]/scale), int(grid.shape[-1]/scale)))[0]
       save_image(grid, Path(config.save.screenshots, "visualize", f"{iter:06d}.png"))
-    
+
+
     # ----------------------------------------------------------------------------------------------
     
     # print("Maximum norm of the gradient of the positions:",torch.max(torch.norm(opt_scene.pointcloud.positions.grad,dim=1)))
@@ -204,7 +206,7 @@ def train(config, quiet=True):
     # Densification
     if iter < cfg_train.densify_until_iter and iter>0:
       if iter > cfg_train.densify_from_iter and iter % cfg_train.densification_interval == 0:
-        opt_scene.pointcloud.densify_and_prune(cfg_train.densify_grad_threshold, u_ox.SIGMA_THRESHOLD, opt_scene.cameras_extent, quiet=quiet)
+        opt_scene.pointcloud.densify_and_prune(cfg_train.densify_grad_threshold, u_ox.SIGMA_THRESHOLD, opt_scene.cameras_extent, quiet=quiet, iteration=iter, tb_writer=tb_writer)
         mempool.free_all_blocks()      
     if cfg_train.unlock_color_features:     
       unlock_freq=cfg_train.unlock_freq
